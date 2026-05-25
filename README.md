@@ -49,12 +49,15 @@ You should see a live, colored table of matched markets and price spreads.
 pmxt-arb-scan --venues polymarket,kalshi
 pmxt-arb-scan --category Sports
 pmxt-arb-scan --query "World Cup"
-pmxt-arb-scan --min-spread 0.01 --limit 20
+pmxt-arb-scan --min-spread 0.01
+pmxt-arb-scan --limit 20
 ```
+
+By default, the table fills the available terminal height. Use `--limit` only if you want to force a smaller page size.
 
 While running:
 
-- `Up` / `Down`: scroll
+- `Up` / `Down` or `j` / `k`: scroll
 - `PageUp` / `PageDown`: jump
 - `/`: search
 - `r`: refresh

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import select
+import shutil
 import sys
 import termios
 import threading
@@ -20,9 +21,10 @@ from .streams import LiveOrderBookWatcher
 
 
 DEFAULT_DEPTH = 20
-DEFAULT_LIMIT = 10
 DEFAULT_CLUSTER_LIMIT = 50
 DEFAULT_REFRESH_SECONDS = 1.0
+SCREEN_CHROME_LINES = 6
+KEY_SEQUENCE_TIMEOUT = 0.2
 
 
 class QuoteStore:
@@ -71,6 +73,13 @@ def parse_venues(value: str) -> tuple[str, ...]:
     return venues or DISCOVERY_VENUES
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pmxt-arb-scan",
@@ -81,7 +90,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--category", help="PMXT category filter.")
     parser.add_argument("--min-confidence", type=float)
     parser.add_argument("--min-spread", type=float, default=0.0)
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    parser.add_argument(
+        "--limit",
+        type=positive_int,
+        default=None,
+        help="Visible rows per screen. Defaults to the terminal height.",
+    )
     parser.add_argument("--clusters", type=int, default=DEFAULT_CLUSTER_LIMIT)
     parser.add_argument("--depth", type=int, default=DEFAULT_DEPTH)
     parser.add_argument("--refresh", type=float, default=DEFAULT_REFRESH_SECONDS)
@@ -126,19 +140,26 @@ class TerminalInput:
             return char
 
         sequence = char
-        deadline = time.monotonic() + 0.03
-        while time.monotonic() < deadline and select.select([sys.stdin], [], [], 0)[0]:
+        deadline = time.monotonic() + KEY_SEQUENCE_TIMEOUT
+        while len(sequence) < 12:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if not select.select([sys.stdin], [], [], remaining)[0]:
+                break
             sequence += sys.stdin.read(1)
-            if len(sequence) >= 3:
+            if sequence in {"\x1b[A", "\x1b[B", "\x1bOA", "\x1bOB", "\x1b[5~", "\x1b[6~"}:
+                break
+            if sequence.startswith("\x1b[") and sequence[-1:] in {"A", "B", "~"}:
                 break
 
-        if sequence == "\x1b[A":
+        if sequence.endswith("A") and sequence.startswith(("\x1b[", "\x1bO")):
             return "up"
-        if sequence == "\x1b[B":
+        if sequence.endswith("B") and sequence.startswith(("\x1b[", "\x1bO")):
             return "down"
-        if sequence == "\x1b[5":
+        if sequence.startswith("\x1b[5") and sequence.endswith("~"):
             return "page_up"
-        if sequence == "\x1b[6":
+        if sequence.startswith("\x1b[6") and sequence.endswith("~"):
             return "page_down"
         return "escape"
 
@@ -293,6 +314,13 @@ def ranked_rows(rows: Iterable[LivePriceRow]) -> list[LivePriceRow]:
     )
 
 
+def visible_row_count(limit: int | None) -> int:
+    if limit is not None:
+        return limit
+    height = shutil.get_terminal_size((120, 24)).lines
+    return max(1, height - SCREEN_CHROME_LINES)
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     args = build_parser().parse_args(argv)
@@ -322,43 +350,47 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Watching {len(threads)} live order books. Press Ctrl-C to stop.")
         try:
             while True:
-                key = terminal.read_key()
-                if key in {"q", "Q"}:
-                    stop.set()
-                    print("\nStopped.")
-                    return 0
-                if key == "up":
-                    offset = max(0, offset - 1)
-                elif key == "down":
-                    offset += 1
-                elif key == "page_up":
-                    offset = max(0, offset - args.limit)
-                elif key == "page_down":
-                    offset += args.limit
-                elif key in {"r", "R"}:
-                    stop.set()
-                    print("\nRefreshing PMXT discovery...")
-                    groups = discover_groups(args, router, active_query)
-                    watch_groups = groups
-                    store, stop, threads = start_streams(
-                        watch_groups,
-                        pmxt_api_key=pmxt_api_key,
-                        depth=args.depth,
-                    )
-                    offset = 0
-                elif key == "/":
-                    next_query = terminal.prompt("\nSearch query (blank clears): ").strip()
-                    active_query = next_query or None
-                    stop.set()
-                    print("Discovering matched PMXT markets...")
-                    groups = discover_groups(args, router, active_query)
-                    watch_groups = groups
-                    store, stop, threads = start_streams(
-                        watch_groups,
-                        pmxt_api_key=pmxt_api_key,
-                        depth=args.depth,
-                    )
-                    offset = 0
+                page_size = visible_row_count(args.limit)
+                while True:
+                    key = terminal.read_key()
+                    if key is None:
+                        break
+                    if key in {"q", "Q"}:
+                        stop.set()
+                        print("\nStopped.")
+                        return 0
+                    if key in {"up", "k", "K"}:
+                        offset = max(0, offset - 1)
+                    elif key in {"down", "j", "J"}:
+                        offset += 1
+                    elif key == "page_up":
+                        offset = max(0, offset - page_size)
+                    elif key == "page_down":
+                        offset += page_size
+                    elif key in {"r", "R"}:
+                        stop.set()
+                        print("\nRefreshing PMXT discovery...")
+                        groups = discover_groups(args, router, active_query)
+                        watch_groups = groups
+                        store, stop, threads = start_streams(
+                            watch_groups,
+                            pmxt_api_key=pmxt_api_key,
+                            depth=args.depth,
+                        )
+                        offset = 0
+                    elif key == "/":
+                        next_query = terminal.prompt("\nSearch query (blank clears): ").strip()
+                        active_query = next_query or None
+                        stop.set()
+                        print("Discovering matched PMXT markets...")
+                        groups = discover_groups(args, router, active_query)
+                        watch_groups = groups
+                        store, stop, threads = start_streams(
+                            watch_groups,
+                            pmxt_api_key=pmxt_api_key,
+                            depth=args.depth,
+                        )
+                        offset = 0
 
                 rows = ranked_rows(
                     live_price_rows(
@@ -368,16 +400,18 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 if rows:
-                    max_offset = max(0, len(rows) - args.limit)
+                    page_size = min(page_size, len(rows))
+                    max_offset = max(0, len(rows) - page_size)
                     offset = min(offset, max_offset)
                 else:
                     offset = 0
-                visible_rows = rows[offset : offset + args.limit]
+                visible_rows = rows[offset : offset + page_size]
 
                 render_price_table(
                     visible_rows,
                     venues=args.venues,
                     limit=None,
+                    start_rank=offset + 1,
                     clear=True,
                 )
                 showing_to = offset + len(visible_rows)
@@ -388,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"matched_groups={len(watch_groups)} "
                     f"streams={len(threads)}"
                 )
-                print("keys: ↑/↓ scroll  PgUp/PgDn jump  / search  r refresh  q quit")
+                print("keys: ↑/↓ or j/k scroll  PgUp/PgDn jump  / search  r refresh  q quit")
                 time.sleep(args.refresh)
         except KeyboardInterrupt:
             stop.set()

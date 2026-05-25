@@ -363,6 +363,7 @@ def format_price_table(
     venues: Iterable[str],
     limit: int | None = 20,
     width: int | None = None,
+    start_rank: int = 1,
 ) -> str:
     items = list(rows)
     items.sort(
@@ -397,7 +398,7 @@ def format_price_table(
         _color("-+-".join("-" * col_width for _, _, col_width, _ in columns), GRAY),
     ]
 
-    for index, row in enumerate(items, start=1):
+    for index, row in enumerate(items, start=start_rank):
         prices = _price_row_prices(row)
         cells = []
         for key, _, col_width, right in columns:
@@ -435,12 +436,21 @@ def render_price_table(
     venues: Iterable[str],
     limit: int | None = 20,
     width: int | None = None,
+    start_rank: int = 1,
     stream: TextIO | None = None,
     clear: bool = False,
 ) -> None:
     stream = stream or sys.stdout
     if clear:
         stream.write("\033[2J\033[H")
-    stream.write(format_price_table(rows, venues=venues, limit=limit, width=width))
+    stream.write(
+        format_price_table(
+            rows,
+            venues=venues,
+            limit=limit,
+            width=width,
+            start_rank=start_rank,
+        )
+    )
     stream.write("\n")
     stream.flush()
