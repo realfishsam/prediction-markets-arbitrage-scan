@@ -4,9 +4,21 @@ Dead-simple live price comparison showcase for PMXT. It finds matched markets ac
 
 ## Run
 
+Create a PMXT API key, then add it to `.env`:
+
 ```bash
 cp .env.example .env
-# set PMXT_API_KEY
+```
+
+Edit `.env`:
+
+```bash
+PMXT_API_KEY=pmxt_your_api_key_here
+```
+
+Install and run:
+
+```bash
 pip install -e .
 pmxt-arb-scan
 ```
